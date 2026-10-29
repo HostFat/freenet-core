@@ -258,6 +258,11 @@ async fn run_network(config: Config) -> anyhow::Result<()> {
     // update-check task so an operator opt-out (#4690) can park it.
     let disable_auto_update = config.disable_auto_update;
 
+    // The QUIC crash-loop breaker (#5940): if a run with QUIC enabled ended
+    // abnormally, QUIC stays off for a cooldown. Enabled here, before the node
+    // is built, because only this binary marks its clean exits (see `main`).
+    freenet::enable_quic_crash_breaker();
+
     let node_config = NodeConfig::new(config)
         .await
         .with_context(|| "failed while loading node config")?;
@@ -1812,10 +1817,18 @@ fn main() {
     };
 
     match freenet_main() {
-        Ok(()) => std::process::exit(0),
+        Ok(()) => {
+            // A clean exit, including an operator stop (#5230): the QUIC
+            // crash-loop breaker must not count it.
+            freenet::quic_breaker_clean_exit();
+            std::process::exit(0)
+        }
         Err(e) => {
             // Check if this is an "update needed" error from auto-update detection
             if let Some(update) = e.downcast_ref::<UpdateNeededError>() {
+                // An auto-update exit is clean: the QUIC crash-loop breaker
+                // must not count it.
+                freenet::quic_breaker_clean_exit();
                 // Auto-update is supervised-install-only: the node never replaces
                 // its own binary. It exits 42 and relies on a supervisor (systemd
                 // ExecStopPost, the macOS launchd wrapper, or the Windows/Linux

@@ -917,6 +917,7 @@ fn run_wrapper_loop(
         }
     }
 
+    let quic_stop_note = log_dir.join("quic-breaker-stop-note");
     loop {
         // Notify tray that we're starting
         #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -934,6 +935,10 @@ fn run_wrapper_loop(
         // back to systemd's INVOCATION_ID, which the in-process wrapper path does
         // not set.
         cmd.env(super::super::auto_update::SUPERVISED_ENV_VAR, "1");
+        // Where this wrapper notes the child's pid before stopping it with a
+        // hard kill (tray Restart, Stop, Quit, update), so the QUIC crash-loop
+        // breaker does not read that kill as an abnormal exit (#5940).
+        cmd.env(freenet::QUIC_BREAKER_STOP_NOTE_ENV_VAR, &quic_stop_note);
 
         // On Windows, prevent a console window from appearing for the child process.
         // The wrapper has already detached from the console via FreeConsole(),
@@ -992,18 +997,30 @@ fn run_wrapper_loop(
                 if let Ok(action) = action_rx.try_recv() {
                     match action {
                         super::super::tray::TrayAction::Quit => {
+                            freenet::record_quic_breaker_deliberate_stop(
+                                &quic_stop_note,
+                                child.id(),
+                            );
                             drop(child.kill());
                             drop(child.wait());
                             return Ok(());
                         }
                         super::super::tray::TrayAction::Restart => {
                             log_wrapper_event(log_dir, "Restart requested via tray");
+                            freenet::record_quic_breaker_deliberate_stop(
+                                &quic_stop_note,
+                                child.id(),
+                            );
                             drop(child.kill());
                             drop(child.wait());
                             break SENTINEL_RESTART;
                         }
                         super::super::tray::TrayAction::Stop => {
                             log_wrapper_event(log_dir, "Stop requested via tray");
+                            freenet::record_quic_breaker_deliberate_stop(
+                                &quic_stop_note,
+                                child.id(),
+                            );
                             drop(child.kill());
                             drop(child.wait());
                             break SENTINEL_STOP;
@@ -1030,6 +1047,10 @@ fn run_wrapper_loop(
                                         "Update installed via tray, restarting wrapper...",
                                     );
                                     status_tx.send(WrapperStatus::UpdatedRestarting).ok();
+                                    freenet::record_quic_breaker_deliberate_stop(
+                                        &quic_stop_note,
+                                        child.id(),
+                                    );
                                     drop(child.kill());
                                     drop(child.wait());
                                     if spawn_new_wrapper(&exe_path, log_dir) {
@@ -1055,6 +1076,10 @@ fn run_wrapper_loop(
                                         "Bundle update staged; exiting for updater to take over",
                                     );
                                     status_tx.send(WrapperStatus::UpdatedRestarting).ok();
+                                    freenet::record_quic_breaker_deliberate_stop(
+                                        &quic_stop_note,
+                                        child.id(),
+                                    );
                                     drop(child.kill());
                                     drop(child.wait());
                                     return Ok(());

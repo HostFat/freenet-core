@@ -1262,6 +1262,7 @@ impl P2pConnManager {
         // drive a mock clock.
         let uptime_clock: DynTimeSource = Arc::new(InstantTimeSrc::new());
         let started_at = uptime_clock.now();
+        let quic_breaker_now = uptime_clock.system_time_now();
 
         Ok(P2pConnManager {
             gateways,
@@ -1315,7 +1316,14 @@ impl P2pConnManager {
                 }),
             ledbat_min_ssthresh: config.config.network_api.ledbat_min_ssthresh,
             congestion_config: config.config.network_api.build_congestion_config(),
-            quic: config.config.network_api.quic_settings(),
+            // The crash-loop breaker may keep QUIC off after a run with QUIC
+            // enabled ended abnormally (#5940); inert outside the binary.
+            quic: crate::transport::quic::breaker::gate(
+                config.config.network_api.quic_settings(),
+                &config.config.data_dir(),
+                config.config.network_api.quic_ignore_crash_breaker,
+                quic_breaker_now,
+            ),
             blocked_addresses: config.blocked_addresses.clone(),
             broadcast_retries: HashMap::new(),
             broadcast_no_target_streak: HashMap::new(),

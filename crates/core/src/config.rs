@@ -332,6 +332,7 @@ impl Default for ConfigArgs {
                 congestion_control: None,  // Default: fixedrate (set in NetworkApiConfig)
                 bbr_startup_rate: None,    // Uses default from BBR config
                 transport_quic: None,      // Default: off
+                quic_ignore_crash_breaker: None,
             },
             ws_api: WebsocketApiArgs {
                 // `None`, NOT an explicit address: this is the "operator said
@@ -1022,6 +1023,11 @@ impl ConfigArgs {
             if self.network_api.transport_quic.is_none() {
                 self.network_api.transport_quic = cfg.network_api.transport_quic.clone();
             }
+            if cfg.network_api.quic_ignore_crash_breaker {
+                self.network_api
+                    .quic_ignore_crash_breaker
+                    .get_or_insert(true);
+            }
             if let Some(limit) = cfg.network_api.total_bandwidth_limit {
                 self.network_api.total_bandwidth_limit.get_or_insert(limit);
             }
@@ -1535,6 +1541,10 @@ impl ConfigArgs {
                     .unwrap_or_else(default_congestion_control),
                 bbr_startup_rate: self.network_api.bbr_startup_rate,
                 transport_quic: self.network_api.transport_quic.clone(),
+                quic_ignore_crash_breaker: self
+                    .network_api
+                    .quic_ignore_crash_breaker
+                    .unwrap_or(false),
                 skip_load_from_network: self.network_api.skip_load_from_network,
                 dropped_persisted_loopback: dropped_persisted_network_loopback,
             },
@@ -2467,6 +2477,17 @@ pub struct NetworkArgs {
     #[arg(long, env = "FREENET_TRANSPORT_QUIC", value_name = "off|prefer")]
     #[serde(rename = "transport-quic", skip_serializing_if = "Option::is_none")]
     pub transport_quic: Option<String>,
+
+    /// Run QUIC even when the crash-loop breaker would keep it off.
+    ///
+    /// If a run with QUIC enabled ends abnormally, the node starts with QUIC
+    /// off for 24 hours. Set this to run QUIC anyway. Default: false.
+    #[arg(long, env = "FREENET_QUIC_IGNORE_CRASH_BREAKER")]
+    #[serde(
+        rename = "quic-ignore-crash-breaker",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub quic_ignore_crash_breaker: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2732,6 +2753,15 @@ pub struct NetworkApiConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub transport_quic: Option<String>,
+
+    /// Run QUIC even when the crash-loop breaker would keep it off
+    /// (`transport::quic::breaker`). Default false.
+    #[serde(
+        default,
+        rename = "quic-ignore-crash-breaker",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub quic_ignore_crash_breaker: bool,
 
     /// When true, this node is part of a local/test network and does not load
     /// gateways from the public remote index. Used to disable the relay-ready
@@ -9407,6 +9437,7 @@ shutdown-drain-secs = 42
                 congestion_control: "bbr".to_string(),
                 bbr_startup_rate: Some(5_000),
                 transport_quic: Some("prefer".to_string()),
+                quic_ignore_crash_breaker: true,
                 skip_load_from_network: true,
                 // serde-skip: a per-boot migration record, never persisted.
                 dropped_persisted_loopback: None,
@@ -9618,6 +9649,7 @@ shutdown-drain-secs = 42
             congestion_control,
             bbr_startup_rate,
             transport_quic,
+            quic_ignore_crash_breaker,
             skip_load_from_network,
             dropped_persisted_loopback: _, // serde-skip: per-boot migration record
         } = network_api;
@@ -9679,6 +9711,10 @@ shutdown-drain-secs = 42
         assert_eq!(
             bbr_startup_rate, seed.network_api.bbr_startup_rate,
             "bbr_startup_rate"
+        );
+        assert_eq!(
+            quic_ignore_crash_breaker, seed.network_api.quic_ignore_crash_breaker,
+            "quic_ignore_crash_breaker"
         );
         assert_eq!(
             transport_quic, seed.network_api.transport_quic,
